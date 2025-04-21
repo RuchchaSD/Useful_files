@@ -176,15 +176,108 @@ Place this line in **/etc/fstab** (with the full absolute paths) so that the sys
 
 ---
 
-## 9. Cross-Compilation Methods
+## 
+## 9. **Chroot into the Restored Root** (Native‑Style Builds)
 
-There are several approaches to cross-compile for the KR260 target system. Here are the main methods:
+This lets you install libraries, run the device’s native toolchain, and test exactly as on hardware.
 
-### 9.1. Using CMake Toolchain File
+### 9.1 Prep: QEMU User Emulation
 
-This method uses a CMake toolchain file to specify cross-compilation settings:
+If your target is ARM64 and host is x86‑64:
 
-<!-- 1. Create a toolchain file (e.g., `kr260_toolchain.cmake`):
- -->
+```bash
+sudo apt-get install qemu-user-static
+```
 
- 2.Chrooting into the mounted board image
+### 9.2 (If Needed) Add ConfigFS Overlay Support
+
+If inside chroot you still get  
+```
+FileNotFoundError: … '/sys/kernel/config/device-tree'
+```  
+it means your kernel doesn’t expose the configfs device‑tree interface. You must either enable **CONFIG_OF_CONFIGFS**, **CONFIG_OF_OVERLAY**, **CONFIG_OF_DYNAMIC** in your kernel and rebuild **or** build/load the out‑of‑tree `dtbocfg` module:
+
+```bash
+git clone https://github.com/ikwzm/dtbocfg.git
+cd dtbocfg
+make
+sudo insmod dtbocfg.ko
+```
+
+This registers the “device-tree” directory under configfs so overlays can be loaded.
+
+### 9.3 Copy QEMU Into the Image
+
+```bash
+sudo cp /usr/bin/qemu-aarch64-static /mnt/kr260/usr/bin/
+```
+
+### 9.4 Mount Pseudo‑Filesystems (Minimal Bind)
+
+```bash
+sudo mount -t proc   proc             /mnt/kr260/proc
+sudo mount -t sysfs  sysfs            /mnt/kr260/sys
+sudo mount -t configfs configfs       /mnt/kr260/sys/kernel/config    # after dtbocfg loaded
+sudo mount --rbind  /dev/pts         /mnt/kr260/dev/pts
+sudo mount --bind   /run             /mnt/kr260/run
+# DNS, if you need networking inside:
+sudo cp /etc/resolv.conf /mnt/kr260/etc/resolv.conf
+```
+
+### 9.5 Add Essential Device Nodes
+
+```bash
+sudo mknod -m 666 /mnt/kr260/dev/null c 1 3
+sudo mknod -m 666 /mnt/kr260/dev/zero c 1 5
+sudo mknod -m 666 /mnt/kr260/dev/tty  c 5 0
+```
+
+### 9.6 Enter the Chroot
+
+```bash
+sudo chroot /mnt/kr260 /bin/bash --login
+```
+
+Now you can run the target’s package manager or toolchain just like on device:
+
+```bash
+# inside chroot
+apt-get update
+apt-get install libglew-dev
+# or build your FYP code…
+```
+
+### 9.7 Exit & Clean Up
+
+```bash
+exit
+sudo umount /mnt/kr260/run
+sudo umount /mnt/kr260/dev/pts
+sudo umount /mnt/kr260/sys/kernel/config
+sudo umount /mnt/kr260/sys
+sudo umount /mnt/kr260/proc
+sudo umount /mnt/kr260
+sudo losetup -d /dev/loop50
+```
+
+If any unmount says “busy”, use `umount -l` (lazy) on that single bind; avoid `-f` unless it’s network FS.
+
+---
+
+## 10. Cross‑Compilation Methods
+
+After you’ve got a working sysroot and/or chroot environment, you can choose:
+
+### 10.1 CMake Toolchain File  
+Create a **kr260_toolchain.cmake** pointing at `/mnt/kr260` as **CMAKE_SYSROOT** and invoke:
+
+```bash
+cmake -DCMAKE_TOOLCHAIN_FILE=kr260_toolchain.cmake \
+      -DCMAKE_BUILD_TYPE=Release  \
+      -S . -B build-kr260
+cmake --build build-kr260
+```
+
+### 10.2 Native Build in Chroot  
+Simply `chroot /mnt/kr260` and run your usual `./configure && make && make install` there.
+
